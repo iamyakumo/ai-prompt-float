@@ -1,8 +1,9 @@
 /* AI 提示词浮窗 —— 浮窗 UI 与交互
  *
  * 依赖：i18n.js（文案表）、panel-style.js（样式）、insert.js（插入核心）
- * 数据全部存在 chrome.storage.local，多标签页自动同步。
+ * 数据默认存在 chrome.storage.local，多标签页自动同步。
  * 不预置任何提示词：首次安装列表为空，由用户新建或导入 JSON。
+ * Notion 同步只走后台 service worker（aipf:notion-sync），这里不直接请求 api.notion.com。
  */
 (function () {
   'use strict';
@@ -121,6 +122,59 @@
   const savePrompts = () => storeSet({ [KEY_PROMPTS]: state.prompts });
   const saveSettings = () => storeSet({ [KEY_SETTINGS]: state.settings });
 
+  function storeSetAsync(obj) {
+    return new Promise((resolve) => {
+      if (hasChromeStorage) {
+        try {
+          chrome.storage.local.set(obj, () => {
+            void (chrome.runtime && chrome.runtime.lastError);
+            resolve();
+          });
+          return;
+        } catch (e) {
+          /* 扩展重载后 context 失效，退回 localStorage */
+        }
+      }
+      for (const key in obj) {
+        try {
+          localStorage.setItem(key, JSON.stringify(obj[key]));
+        } catch (e2) {
+          /* ignore */
+        }
+      }
+      resolve();
+    });
+  }
+
+  function normalizeSettings(raw) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const settings = Object.assign({}, DEFAULT_SETTINGS, src);
+    const pos = src.pos && typeof src.pos === 'object' ? src.pos : {};
+    const right = Number(pos.right);
+    const bottom = Number(pos.bottom);
+    settings.pos = {
+      right: Number.isFinite(right) ? right : DEFAULT_SETTINGS.pos.right,
+      bottom: Number.isFinite(bottom) ? bottom : DEFAULT_SETTINGS.pos.bottom,
+    };
+    const notionSrc = src.notion && typeof src.notion === 'object' ? src.notion : {};
+    const counts = notionSrc.lastCounts && typeof notionSrc.lastCounts === 'object' ? notionSrc.lastCounts : {};
+    settings.notion = {
+      token: typeof notionSrc.token === 'string' ? notionSrc.token : '',
+      databaseId: typeof notionSrc.databaseId === 'string' ? notionSrc.databaseId : '',
+      lastSyncAt: typeof notionSrc.lastSyncAt === 'string' ? notionSrc.lastSyncAt : '',
+      lastSyncAction: typeof notionSrc.lastSyncAction === 'string' ? notionSrc.lastSyncAction : '',
+      lastSyncOk: !!notionSrc.lastSyncOk,
+      lastErrorCode: typeof notionSrc.lastErrorCode === 'string' ? notionSrc.lastErrorCode : '',
+      lastErrorDetail: typeof notionSrc.lastErrorDetail === 'string' ? notionSrc.lastErrorDetail : '',
+      lastCounts: {
+        created: Number(counts.created) || 0,
+        updated: Number(counts.updated) || 0,
+        pulled: Number(counts.pulled) || 0,
+      },
+    };
+    return settings;
+  }
+
   // ------------------------------------------------------------ 工具
 
   function uid() {
@@ -135,11 +189,15 @@
       const content = typeof item.content === 'string' ? item.content : '';
       const title = typeof item.title === 'string' && item.title.trim() ? item.title.trim() : '';
       if (!content && !title) continue;
-      out.push({
+      const prompt = {
         id: typeof item.id === 'string' && item.id ? item.id : uid(),
         title: title || content.slice(0, 16) || t('common.untitled'),
         content,
-      });
+      };
+      if (typeof item.notionPageId === 'string' && item.notionPageId.trim()) {
+        prompt.notionPageId = item.notionPageId.trim();
+      }
+      out.push(prompt);
     }
     return out;
   }
@@ -190,6 +248,7 @@
   let view = 'list';
   let editingId = null;
   let toastTimer = 0;
+  let notionBusy = false;
 
   const BALL_ICON =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" ' +
@@ -273,6 +332,25 @@
     '          <button class="aipf-btn ghost danger" data-act="clear-all" data-i18n="settings.clear"></button>',
     '        </div>',
     '        <div class="aipf-hint" data-i18n="settings.dataHint"></div>',
+    '      </div>',
+    '      <div class="aipf-sep"></div>',
+    '      <div class="aipf-group" data-role="notion">',
+    '        <div class="aipf-label" data-i18n="settings.notion"></div>',
+    '        <div class="aipf-label" data-i18n="settings.notionToken"></div>',
+    '        <input type="password" class="aipf-input" data-field="notion-token" autocomplete="off"',
+    '          spellcheck="false" data-i18n-ph="settings.notionTokenPh">',
+    '        <div class="aipf-label" data-i18n="settings.notionDb"></div>',
+    '        <input type="text" class="aipf-input" data-field="notion-db" autocomplete="off"',
+    '          spellcheck="false" data-i18n-ph="settings.notionDbPh">',
+    '        <div class="aipf-actions">',
+    '          <button type="button" class="aipf-btn ghost" data-act="notion-push" data-i18n="settings.notionPush"></button>',
+    '          <button type="button" class="aipf-btn ghost" data-act="notion-pull" data-i18n="settings.notionPull"></button>',
+    '          <button type="button" class="aipf-btn" data-act="notion-both" data-i18n="settings.notionBoth"></button>',
+    '        </div>',
+    '        <div class="aipf-hint" data-role="notion-status"></div>',
+    '        <div class="aipf-hint"><a href="https://www.notion.so/my-integrations" target="_blank"',
+    '          rel="noreferrer noopener" data-i18n="settings.notionOpen"></a></div>',
+    '        <div class="aipf-hint" data-i18n="settings.notionHint"></div>',
     '      </div>',
     '      <div class="aipf-group">',
     '        <div class="aipf-label" data-i18n="settings.other"></div>',
@@ -359,6 +437,15 @@
     panelEl.addEventListener('input', (e) => {
       if (e.target === searchEl) renderList();
     });
+    if (settingsViewEl) {
+      const onNotionCommit = (e) => {
+        const field = e.target && e.target.getAttribute && e.target.getAttribute('data-field');
+        if (field !== 'notion-token' && field !== 'notion-db') return;
+        if (commitNotionFields()) saveSettings();
+      };
+      settingsViewEl.addEventListener('change', onNotionCommit);
+      settingsViewEl.addEventListener('focusout', onNotionCommit);
+    }
 
     const root = document.body || document.documentElement;
     root.appendChild(host);
@@ -428,6 +515,7 @@
     for (const radio of settingsViewEl.querySelectorAll('[data-act="set-mode"]')) {
       radio.checked = radio.value === state.settings.mode;
     }
+    fillNotionFields();
   }
 
   function resetPos() {
@@ -550,13 +638,13 @@
     else openPanel(false);
   }
 
-  function toast(message, kind) {
+  function toast(message, kind, duration) {
     if (!toastEl) return;
     toastEl.textContent = message;
     toastEl.setAttribute('data-kind', kind === 'error' ? 'error' : 'info');
     toastEl.setAttribute('data-show', '1');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toastEl.setAttribute('data-show', '0'), 2000);
+    toastTimer = setTimeout(() => toastEl.setAttribute('data-show', '0'), duration || 2000);
   }
 
   function insertPrompt(p) {
@@ -653,9 +741,219 @@
         resetPos();
         toast(t('toast.posReset'));
         break;
+      case 'notion-push':
+        void runNotion('push');
+        break;
+      case 'notion-pull':
+        void runNotion('pull');
+        break;
+      case 'notion-both':
+        void runNotion('both');
+        break;
       default:
         break;
     }
+  }
+
+  function notionField(name) {
+    return settingsViewEl ? settingsViewEl.querySelector('[data-field="' + name + '"]') : null;
+  }
+
+  function commitNotionFields() {
+    if (!state.settings.notion) state.settings = normalizeSettings(state.settings);
+    const tokenEl = notionField('notion-token');
+    const dbEl = notionField('notion-db');
+    const prevToken = state.settings.notion.token;
+    const prevDb = state.settings.notion.databaseId;
+    if (tokenEl) state.settings.notion.token = tokenEl.value.trim();
+    if (dbEl) state.settings.notion.databaseId = dbEl.value.trim();
+    return state.settings.notion.token !== prevToken || state.settings.notion.databaseId !== prevDb;
+  }
+
+  function fillNotionFields() {
+    if (!settingsViewEl || !state.settings.notion) return;
+    const n = state.settings.notion;
+    const active = shadow && shadow.activeElement;
+    const tokenEl = notionField('notion-token');
+    const dbEl = notionField('notion-db');
+    if (tokenEl && active !== tokenEl && tokenEl.value !== n.token) tokenEl.value = n.token || '';
+    if (dbEl && active !== dbEl && dbEl.value !== n.databaseId) dbEl.value = n.databaseId || '';
+    for (const btn of settingsViewEl.querySelectorAll('[data-act="notion-push"], [data-act="notion-pull"], [data-act="notion-both"]')) {
+      btn.disabled = notionBusy;
+    }
+    renderNotionStatus();
+  }
+
+  function notionActionLabel(action) {
+    if (action === 'pull') return t('settings.notionActionPull');
+    if (action === 'both') return t('settings.notionActionBoth');
+    return t('settings.notionActionPush');
+  }
+
+  function formatSyncTime(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso || '');
+    try {
+      return new Intl.DateTimeFormat(lang === 'zh' ? 'zh-CN' : 'en-US', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(d);
+    } catch (e) {
+      return String(iso || '');
+    }
+  }
+
+  function formatNotionError(code, detail) {
+    switch (code) {
+      case 'need_token':
+        return t('toast.notionNeedToken');
+      case 'need_db':
+        return t('toast.notionNeedDb');
+      case 'bad_db':
+        return t('toast.notionBadDb');
+      case 'missing_props':
+        return t('notion.missingProps', { names: detail || '' });
+      case 'wrong_type':
+        return t('notion.wrongType', { names: detail || '' });
+      case 'unauthorized':
+        return t('notion.unauthorized');
+      case 'forbidden':
+        return t('notion.forbidden');
+      case 'not_found':
+        return t('notion.notFound');
+      case 'not_database':
+        return t('notion.notDatabase');
+      case 'network':
+        return t('notion.network');
+      case 'rate_limit':
+        return t('notion.rateLimit');
+      case 'no_background':
+        return t('notion.noBackground');
+      default:
+        return t('toast.notionFail', { error: detail || code || '' });
+    }
+  }
+
+  function renderNotionStatus() {
+    const el = settingsViewEl && settingsViewEl.querySelector('[data-role="notion-status"]');
+    if (!el) return;
+    if (notionBusy) {
+      el.setAttribute('data-kind', 'info');
+      el.textContent = t('settings.notionWorking');
+      return;
+    }
+    const n = state.settings.notion || {};
+    if (!n.lastSyncAt) {
+      el.setAttribute('data-kind', 'info');
+      el.textContent = t('settings.notionNever');
+      return;
+    }
+    const time = formatSyncTime(n.lastSyncAt);
+    if (n.lastSyncOk) {
+      const c = n.lastCounts || {};
+      el.setAttribute('data-kind', 'ok');
+      el.textContent = t('settings.notionStatusOk', {
+        time: time,
+        action: notionActionLabel(n.lastSyncAction),
+        created: c.created || 0,
+        updated: c.updated || 0,
+        pulled: c.pulled || 0,
+      });
+      return;
+    }
+    el.setAttribute('data-kind', 'error');
+    el.textContent = t('settings.notionStatusFail', {
+      time: time,
+      error: formatNotionError(n.lastErrorCode, n.lastErrorDetail),
+    });
+  }
+
+  function markNotionResult(mode, ok, code, detail, counts) {
+    if (!state.settings.notion) state.settings = normalizeSettings(state.settings);
+    const n = state.settings.notion;
+    n.lastSyncAt = new Date().toISOString();
+    n.lastSyncAction = mode;
+    n.lastSyncOk = !!ok;
+    n.lastErrorCode = ok ? '' : code || 'notion';
+    n.lastErrorDetail = ok ? '' : detail || '';
+    n.lastCounts = {
+      created: counts && counts.created ? counts.created : 0,
+      updated: counts && counts.updated ? counts.updated : 0,
+      pulled: counts && counts.pulled ? counts.pulled : 0,
+    };
+  }
+
+  function sendRuntime(msg) {
+    return new Promise((resolve) => {
+      const runtime = globalThis.chrome && chrome.runtime;
+      if (!runtime || typeof runtime.sendMessage !== 'function') {
+        resolve({ ok: false, code: 'no_background', persisted: false });
+        return;
+      }
+      try {
+        runtime.sendMessage(msg, (resp) => {
+          const err = runtime.lastError;
+          if (err) {
+            resolve({ ok: false, code: 'no_background', persisted: false });
+            return;
+          }
+          resolve(resp || { ok: false, code: 'no_background', persisted: false });
+        });
+      } catch (e) {
+        resolve({ ok: false, code: 'no_background', persisted: false });
+      }
+    });
+  }
+
+  async function runNotion(mode) {
+    if (notionBusy) return;
+    if (!state.settings.notion) state.settings = normalizeSettings(state.settings);
+    commitNotionFields();
+    const notion = state.settings.notion;
+    if (!notion.token) {
+      markNotionResult(mode, false, 'need_token', '', null);
+      saveSettings();
+      renderNotionStatus();
+      toast(t('toast.notionNeedToken'), 'error', 3600);
+      return;
+    }
+    if (!notion.databaseId) {
+      markNotionResult(mode, false, 'need_db', '', null);
+      saveSettings();
+      renderNotionStatus();
+      toast(t('toast.notionNeedDb'), 'error', 3600);
+      return;
+    }
+    if (mode === 'pull' && state.prompts.length) {
+      const ok = window.confirm(t('confirm.notionPull', { n: state.prompts.length }));
+      if (!ok) return;
+    }
+
+    notionBusy = true;
+    fillNotionFields();
+    await storeSetAsync({ [KEY_SETTINGS]: state.settings });
+    const resp = await sendRuntime({ type: 'aipf:notion-sync', mode: mode });
+    notionBusy = false;
+
+    const counts = (resp && resp.counts) || { created: 0, updated: 0, pulled: 0 };
+    if (!resp || !resp.ok) {
+      const code = resp && resp.code ? resp.code : 'no_background';
+      const detail = resp && resp.detail ? resp.detail : '';
+      if (!resp || !resp.persisted) {
+        markNotionResult(mode, false, code, detail, counts);
+        saveSettings();
+      }
+      fillNotionFields();
+      toast(formatNotionError(code, detail), 'error', 4200);
+      return;
+    }
+
+    const key = mode === 'pull' ? 'toast.notionPullOk' : mode === 'both' ? 'toast.notionBothOk' : 'toast.notionPushOk';
+    fillNotionFields();
+    toast(t(key, { created: counts.created || 0, updated: counts.updated || 0, pulled: counts.pulled || 0 }), 'info', 3600);
   }
 
   function openEdit(id) {
@@ -898,7 +1196,7 @@
       render();
     }
     if (changes[KEY_SETTINGS]) {
-      state.settings = Object.assign({}, DEFAULT_SETTINGS, changes[KEY_SETTINGS].newValue || {});
+      state.settings = normalizeSettings(changes[KEY_SETTINGS].newValue || {});
       applyEnabled();
       if (host) {
         applyLang();
@@ -965,8 +1263,10 @@
     try {
       if (runtime.onMessage) {
         runtime.onMessage.addListener((msg, sender, sendResponse) => {
-          if (!msg || typeof msg.type !== 'string') return undefined;
-          handleMessage(msg).then(
+      if (!msg || typeof msg.type !== 'string') return undefined;
+      // 同步请求要交给 background 应答。这里若 return true，会抢先关掉消息通道。
+      if (msg.type === 'aipf:notion-sync') return undefined;
+      handleMessage(msg).then(
             (resp) => sendResponse(resp || { ok: false }),
             () => sendResponse({ ok: false, reason: 'handler-error' })
           );
@@ -985,7 +1285,7 @@
 
   async function init() {
     const res = await storeGet([KEY_PROMPTS, KEY_SETTINGS]);
-    state.settings = Object.assign({}, DEFAULT_SETTINGS, res[KEY_SETTINGS] || {});
+    state.settings = normalizeSettings(res[KEY_SETTINGS] || {});
     applyLang();
     // 不预置提示词：没存过就是空列表
     state.prompts = normalizePrompts(res[KEY_PROMPTS]);

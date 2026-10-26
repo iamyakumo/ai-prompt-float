@@ -281,6 +281,7 @@ globalThis.AIPF_CSS = `
   transition: filter 0.12s ease, background 0.12s ease;
 }
 .aipf-btn:hover { filter: brightness(1.07); }
+.aipf-btn:disabled { opacity: 0.5; cursor: default; filter: none; }
 .aipf-btn.ghost {
   background: transparent;
   color: var(--aipf-fg);
@@ -304,6 +305,11 @@ globalThis.AIPF_CSS = `
 .aipf-radio small { display: block; color: var(--aipf-fg-dim); font-size: 11.3px; }
 .aipf-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .aipf-hint { color: var(--aipf-fg-dim); font-size: 11.3px; }
+.aipf-hint a { color: var(--aipf-accent); text-decoration: none; }
+.aipf-hint a:hover { text-decoration: underline; }
+.aipf-hint[data-kind="error"] { color: var(--aipf-danger); }
+.aipf-hint[data-kind="ok"] { color: var(--aipf-fg); }
+.aipf-hint[data-role="notion-status"] { overflow-wrap: anywhere; }
 .aipf-kbd {
   border: 1px solid var(--aipf-line);
   border-bottom-width: 2px;
@@ -342,7 +348,7 @@ globalThis.AIPF_CSS = `
   opacity: 0;
   transform: translateY(6px);
   transition: opacity 0.18s ease, transform 0.18s ease;
-  max-width: 300px;
+  max-width: 340px;
   text-align: center;
 }
 .aipf-toast[data-show="1"] { opacity: 1; transform: translateY(0); }
