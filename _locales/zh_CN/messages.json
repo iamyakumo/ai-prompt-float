@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "AI 提示词浮窗",
+    "description": "扩展名称（显示在扩展管理页与工具栏提示中）"
+  },
+  "extDesc": {
+    "message": "在 ChatGPT / Gemini / Grok / Kimi 网页版上加一个自定义浮窗，点击即把预设提示词填入输入框（不自动发送）。",
+    "description": "扩展描述"
+  },
+  "actionTitle": {
+    "message": "AI 提示词浮窗",
+    "description": "工具栏图标提示文字"
+  }
+}

@@ -1,0 +1,77 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1e2230;
+  --dim: #6b7285;
+  --line: #e4e7ef;
+  --soft: #f5f6fa;
+  --accent: #4f7cff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1d2027;
+    --fg: #e8eaf0;
+    --dim: #9aa1b1;
+    --line: #343a46;
+    --soft: #262a33;
+    --accent: #7a9cff;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 296px;
+  margin: 0;
+  padding: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+header img { border-radius: 6px; }
+.name { font-weight: 600; font-size: 13.5px; }
+.sub { color: var(--dim); font-size: 11.5px; }
+
+section {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.label { font-size: 11.5px; font-weight: 600; color: var(--dim); margin-bottom: 5px; letter-spacing: 0.3px; }
+
+.switch,
+.radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.radio + .radio { margin-top: 5px; }
+.switch input,
+.radio input { margin: 2px 0 0; accent-color: var(--accent); }
+.radio small { display: block; color: var(--dim); font-size: 11.3px; }
+
+.hint { color: var(--dim); font-size: 11.3px; margin: 6px 0 0; }
+
+.actions { padding-top: 11px; }
+button.primary {
+  width: 100%;
+  appearance: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12.8px;
+  font-family: inherit;
+  cursor: pointer;
+}
+button.primary:hover { filter: brightness(1.07); }

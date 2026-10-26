@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "AI Prompt Dock",
+    "description": "Extension name (shown on the extensions page and in the toolbar tooltip)"
+  },
+  "extDesc": {
+    "message": "Adds a floating panel to ChatGPT, Gemini, Grok and Kimi web apps: click a saved prompt to drop it into the input box (nothing is sent automatically).",
+    "description": "Extension description"
+  },
+  "actionTitle": {
+    "message": "AI Prompt Dock",
+    "description": "Toolbar icon tooltip"
+  }
+}

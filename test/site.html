@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>模拟 ChatGPT 页面</title>
+    <style>
+      #prompt-textarea { position: absolute; bottom: 24px; left: 16px; width: 520px; min-height: 70px;
+        border: 1px solid #ccc; border-radius: 8px; padding: 8px; }
+      #result { position: absolute; top: 12px; left: 16px; width: 720px; margin: 0; padding: 8px;
+        background: #f6f7fb; border: 1px solid #ddd; border-radius: 6px; font-size: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <pre id="result">running…</pre>
+    <div id="prompt-textarea" contenteditable="true" data-placeholder="给 ChatGPT 发消息"></div>
+
+    <script>
+      let log = [];
+      try { log = JSON.parse(sessionStorage.getItem('aipfExtLog') || '[]'); } catch (e) { log = []; }
+      const saveLog = () => { try { sessionStorage.setItem('aipfExtLog', JSON.stringify(log)); } catch (e) {} };
+      function check(name, ok, extra) {
+        log.push((ok ? 'PASS' : 'FAIL') + ' | ' + name + (extra ? '  → ' + extra : ''));
+        saveLog();
+      }
+      function report() {
+        const pass = log.filter((l) => l.indexOf('PASS') === 0).length;
+        const text = 'AIPF-EXT ' + pass + '/' + log.length + '\n' + log.join('\n');
+        document.getElementById('result').textContent = text;
+        document.title = 'EXT ' + pass + '/' + log.length;
+        // 无头浏览器不方便读取 DOM 时，用请求把结果回报到本地服务器的访问日志里
+        try { fetch('/__report?d=' + encodeURIComponent(text), { cache: 'no-store' }); } catch (e) {}
+      }
+      function waitFor(fn, timeout) {
+        return new Promise((resolve) => {
+          const t0 = Date.now();
+          (function tick() {
+            let v = null;
+            try { v = fn(); } catch (e) { v = null; }
+            if (v) return resolve(v);
+            if (Date.now() - t0 > (timeout || 8000)) return resolve(null);
+            setTimeout(tick, 60);
+          })();
+        });
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const click = (node) => node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+      (async function () {
+        const host = await waitFor(() => document.querySelector('[data-aipf-root]'));
+        if (!host) {
+          check('内容脚本已注入到 chatgpt.com 页面', false, '页面上没有浮窗节点');
+          report();
+          return;
+        }
+        check('内容脚本已注入到 chatgpt.com 页面', true);
+
+        const shadow = host.shadowRoot;
+        check('Shadow DOM 挂载成功', !!shadow);
+        const ball = shadow && shadow.querySelector('.aipf-ball');
+        const panel = shadow && shadow.querySelector('.aipf-panel');
+        check('浮窗按钮与面板已渲染', !!ball && !!panel);
+
+        const cs = ball ? getComputedStyle(ball) : null;
+        check(
+          '样式注入生效（fixed / 44px 圆形）',
+          !!cs && cs.position === 'fixed' && Math.round(parseFloat(cs.width)) === 44,
+          cs ? cs.position + ' / ' + cs.width : 'n/a'
+        );
+
+        const items = shadow.querySelectorAll('.aipf-item');
+
+        if (items.length === 0) {
+          check('首次安装列表为空（不预置提示词）', true, 'count=0');
+
+          // 通过浮窗新建一条提示词
+          click(shadow.querySelector('[data-act="new"]'));
+          shadow.querySelector('[data-field="title"]').value = '持久化测试';
+          shadow.querySelector('[data-field="content"]').value = '这条用来验证 chrome.storage 持久化';
+          click(shadow.querySelector('[data-act="save-edit"]'));
+          await sleep(200);
+          const now = shadow.querySelectorAll('.aipf-item').length;
+          check('通过浮窗新建提示词', now === 1, 'count=' + now);
+
+          // 点它应该填进页面上的聊天输入框（只填不发）
+          const editor = document.getElementById('prompt-textarea');
+          editor.textContent = '';
+          click(shadow.querySelector('.aipf-item'));
+          await sleep(150);
+          check(
+            '点击提示词已填入聊天输入框',
+            editor.textContent.indexOf('chrome.storage 持久化') >= 0,
+            JSON.stringify(editor.textContent.slice(0, 22)) + '…'
+          );
+
+          report();
+          setTimeout(() => location.reload(), 500);
+        } else {
+          check('重载后提示词仍在（chrome.storage 持久化成功）', items.length === 1, 'count=' + items.length);
+          const first = shadow.querySelector('.aipf-item-title');
+          check('持久化的内容正确', !!first && first.textContent === '持久化测试', first ? first.textContent : 'n/a');
+          const title = shadow.querySelector('[data-i18n="panel.title"]');
+          check('界面文案已按语言渲染', !!title && title.textContent.trim().length > 0, title ? title.textContent : 'n/a');
+          report();
+        }
+      })();
+    </script>
+  </body>
+</html>

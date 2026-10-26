@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>AI Prompt Dock</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="icons/icon48.png" alt="" width="24" height="24" />
+      <div>
+        <div class="name" data-i18n="extName"></div>
+        <div class="sub" id="count">—</div>
+      </div>
+    </header>
+
+    <section>
+      <label class="switch">
+        <input type="checkbox" id="enabled" />
+        <span data-i18n="popup.enable"></span>
+      </label>
+      <p class="hint" data-i18n="popup.enableHint"></p>
+    </section>
+
+    <section>
+      <div class="label" data-i18n="popup.behavior"></div>
+      <label class="radio">
+        <input type="radio" name="mode" value="append" />
+        <span><span data-i18n="popup.append"></span><small data-i18n="popup.appendDesc"></small></span>
+      </label>
+      <label class="radio">
+        <input type="radio" name="mode" value="replace" />
+        <span><span data-i18n="popup.replace"></span><small data-i18n="popup.replaceDesc"></small></span>
+      </label>
+    </section>
+
+    <section>
+      <label class="switch">
+        <input type="checkbox" id="autoHide" />
+        <span data-i18n="popup.autoHide"></span>
+      </label>
+    </section>
+
+    <div class="actions">
+      <button id="open" class="primary" data-i18n="popup.openHere"></button>
+    </div>
+
+    <p class="hint" data-i18n="popup.shortcutHint"></p>
+    <p class="hint" id="status"></p>
+
+    <script src="src/i18n.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

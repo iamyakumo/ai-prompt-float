@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>AI 提示词浮窗 — 自动化测试页</title>
+    <style>
+      body { margin: 0; height: 100vh; font: 13px/1.5 "Microsoft YaHei", sans-serif; }
+      #searchbox { position: absolute; top: 16px; left: 16px; width: 220px; padding: 4px; }
+      #ce-pm { position: absolute; top: 200px; left: 16px; width: 400px; min-height: 60px; padding: 6px; border: 1px solid #bbb; }
+      #ta { position: absolute; bottom: 24px; left: 16px; width: 480px; height: 64px; padding: 6px; }
+      #test-output { position: absolute; top: 16px; right: 16px; width: 360px; margin: 0; padding: 8px;
+        background: #f6f7fb; border: 1px solid #ddd; border-radius: 6px; font-size: 11.5px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <input id="searchbox" type="text" placeholder="页面搜索框（不应被选中）" />
+    <div id="ce-pm" contenteditable="true"><p>已有草稿</p></div>
+    <textarea id="ta" placeholder="聊天输入框（模拟）"></textarea>
+    <pre id="test-output">running…</pre>
+
+    <!-- 1. chrome API 桩：让 content.js 能在普通网页里跑起来 -->
+    <script>
+      window.__store = {};
+      window.chrome = {
+        runtime: {
+          lastError: null,
+          onMessage: { addListener(fn) { window.__msgListener = fn; } },
+          getURL: (p) => p,
+        },
+        // 固定成中文界面，让「语言跟随浏览器」这条断言可确定复现
+        i18n: { getUILanguage: () => 'zh-CN' },
+        storage: {
+          local: {
+            get(keys, cb) {
+              const list = Array.isArray(keys) ? keys : [keys];
+              const out = {};
+              for (const k of list) if (k in window.__store) out[k] = JSON.parse(JSON.stringify(window.__store[k]));
+              setTimeout(() => cb(out), 0);
+            },
+            set(obj, cb) {
+              for (const k in obj) window.__store[k] = JSON.parse(JSON.stringify(obj[k]));
+              if (cb) setTimeout(cb, 0);
+            },
+          },
+          onChanged: { addListener() {} },
+        },
+      };
+    </script>
+
+    <!-- 2. 被测脚本（顺序与 manifest 一致） -->
+    <script src="../src/i18n.js"></script>
+    <script src="../src/panel-style.js"></script>
+    <script src="../src/insert.js"></script>
+    <script src="../src/content.js"></script>
+
+    <!-- 3. 断言 -->
+    <script>
+      const results = [];
+      function check(name, ok, extra) {
+        results.push({ name: name, ok: !!ok, extra: extra == null ? '' : String(extra) });
+      }
+      function report() {
+        const pass = results.filter((r) => r.ok).length;
+        const lines = results.map((r) => (r.ok ? 'PASS' : 'FAIL') + ' | ' + r.name + (r.extra ? '  → ' + r.extra : ''));
+        const text = 'AIPF-RESULT ' + pass + '/' + results.length + '\n' + lines.join('\n');
+        document.getElementById('test-output').textContent = text;
+        document.title = 'AIPF ' + pass + '/' + results.length;
+      }
+
+      // 模拟 popup 通过 chrome.runtime.sendMessage 发来的消息
+      function sendMsg(msg) {
+        return new Promise((resolve) => {
+          const listener = window.__msgListener;
+          if (!listener) return resolve(null);
+          const ret = listener(msg, {}, (resp) => resolve(resp));
+          if (ret !== true) resolve(null); // 同步应答的情况这里不覆盖
+        });
+      }
+
+      setTimeout(async function () {
+        const NS = window.AIPF;
+        const ta = document.getElementById('ta');
+        const pm = document.getElementById('ce-pm');
+
+        try {
+          // T1 输入框定位：底部聊天框优先于顶部搜索框
+          const picked = NS.findEditor();
+          check('定位到页面底部的聊天输入框', picked === ta, picked ? picked.id || picked.tagName : 'null');
+
+          // T2 textarea 追加
+          ta.value = '已有内容';
+          let r = NS.insert('【提示词】', { mode: 'append', target: ta });
+          check('textarea 追加模式', r.ok && ta.value === '已有内容【提示词】', JSON.stringify(ta.value));
+
+          // T3 textarea 覆盖
+          r = NS.insert('只保留这句', { mode: 'replace', target: ta });
+          check('textarea 覆盖模式', r.ok && ta.value === '只保留这句', JSON.stringify(ta.value));
+
+          // T4 组件事件：React/Vue 受控输入框需要 input 事件才能同步
+          let inputFired = 0;
+          const onInput = () => inputFired++;
+          ta.addEventListener('input', onInput);
+          ta.value = '';
+          NS.insert('事件测试', { mode: 'append', target: ta });
+          ta.removeEventListener('input', onInput);
+          check('插入时派发 input 事件', inputFired > 0, 'input 事件次数=' + inputFired);
+
+          // T5 contenteditable 追加（模拟 ProseMirror / Quill）
+          const r5 = NS.insert('追加到编辑器', { mode: 'append', target: pm });
+          check('contenteditable 追加模式', r5.ok && /追加到编辑器/.test(pm.innerText), JSON.stringify(pm.innerText));
+
+          // T6 contenteditable 覆盖
+          const r6 = NS.insert('全新内容', { mode: 'replace', target: pm });
+          check('contenteditable 覆盖模式', r6.ok && pm.innerText.trim() === '全新内容', JSON.stringify(pm.innerText));
+
+          // T7 排除项：隐藏底部输入框后应改选 contenteditable
+          ta.style.display = 'none';
+          const picked2 = NS.findEditor();
+          check('输入框隐藏后改选 contenteditable', picked2 === pm, picked2 ? picked2.id || picked2.tagName : 'null');
+          ta.style.display = '';
+
+          // T8 浮窗挂载
+          const host = document.querySelector('[data-aipf-root]');
+          let shadow = host && host.shadowRoot;
+          check('浮窗挂载到 Shadow DOM', !!shadow && !!shadow.querySelector('.aipf-ball') && !!shadow.querySelector('.aipf-panel'));
+
+          // T9 不预置任何提示词：首次运行列表应为空
+          check('首次运行提示词列表为空', NS.__ui.state.prompts.length === 0, 'count=' + NS.__ui.state.prompts.length);
+
+          // T10 空列表要给出引导（新建 / 导入）
+          const emptyBox = shadow.querySelector('.aipf-empty');
+          const emptyBtns = shadow.querySelectorAll('.aipf-empty-actions [data-act]');
+          check('空状态显示引导按钮', emptyBox.hidden === false && emptyBtns.length === 2, 'buttons=' + emptyBtns.length);
+
+          // T11 顶部搜索框获得焦点时，仍应选中底部聊天输入框
+          document.getElementById('searchbox').focus();
+          const picked3 = NS.findEditor();
+          check('焦点在顶部搜索框时仍选中聊天框', picked3 === ta, picked3 ? picked3.id || picked3.tagName : 'null');
+
+          // T12 新建提示词并落库
+          NS.__ui.open();
+          shadow.querySelector('[data-act="new"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          shadow.querySelector('[data-field="title"]').value = '测试提示词';
+          shadow.querySelector('[data-field="content"]').value = '把下面的内容总结成三条要点：';
+          shadow.querySelector('[data-act="save-edit"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          const saved = NS.__ui.state.prompts;
+          check('新建提示词并写入存储',
+            saved.length === 1 && saved[0].title === '测试提示词' && (window.__store['aipf.prompts'] || []).length === 1,
+            'count=' + saved.length);
+
+          // T13 光标在聊天框里时，点击列表项应填入聊天框
+          ta.focus();
+          ta.value = '';
+          shadow.querySelector('.aipf-item').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          check('点击列表项填入输入框', ta.value === saved[0].content, JSON.stringify(ta.value.slice(0, 18)) + '…');
+
+          // T14 搜索过滤（命中 / 未命中两种状态）
+          const search = shadow.querySelector('.aipf-search-input');
+          search.value = '总结';
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+          const hit = shadow.querySelectorAll('.aipf-item').length;
+          search.value = '不存在的关键词';
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+          const miss = shadow.querySelectorAll('.aipf-item').length;
+          const missHint = shadow.querySelector('.aipf-empty').hidden === false;
+          search.value = '';
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+          check('搜索过滤生效', hit === 1 && miss === 0 && missHint, '命中=' + hit + ' 未命中=' + miss);
+
+          // T15 界面语言：默认跟随浏览器界面语言（chrome.i18n）
+          const titleOf = () => document.querySelector('[data-aipf-root]').shadowRoot
+            .querySelector('[data-i18n="panel.title"]').textContent;
+          check('默认语言跟随浏览器界面语言', titleOf() === '提示词', 'title=' + titleOf());
+
+          // T16 手动覆盖成 English
+          shadow.querySelector('[data-act="set-lang"][data-value="en"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          shadow = document.querySelector('[data-aipf-root]').shadowRoot;
+          const enTitle = titleOf();
+          const enMode = shadow.querySelector('.aipf-mode').textContent;
+          check('切换到 English 生效', enTitle === 'Prompts' && enMode === 'Append', 'title=' + enTitle + ' mode=' + enMode);
+
+          // T17 切回中文
+          shadow.querySelector('[data-act="set-lang"][data-value="zh"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          shadow = document.querySelector('[data-aipf-root]').shadowRoot;
+          check('切换回中文生效', titleOf() === '提示词' && shadow.querySelector('.aipf-mode').textContent === '追加',
+            'title=' + titleOf());
+
+          // T18 语言设置已持久化
+          check('语言设置已持久化', (window.__store['aipf.settings'] || {}).lang === 'zh',
+            'lang=' + (window.__store['aipf.settings'] || {}).lang);
+
+          // T19 删除提示词
+          shadow.querySelector('.aipf-item-actions [data-act="del"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          check('删除提示词', NS.__ui.state.prompts.length === 0 && (window.__store['aipf.prompts'] || []).length === 0,
+            'count=' + NS.__ui.state.prompts.length);
+
+          // T20 popup 自检消息有应答（说明消息通道注册成功）
+          const ping = await sendMsg({ type: 'aipf:ping' });
+          check('popup 消息 aipf:ping 有应答', !!ping && ping.ok === true && ping.injected === true,
+            JSON.stringify(ping));
+
+          // T21 popup 一键打开浮窗
+          const panelEl = shadow.querySelector('.aipf-panel');
+          panelEl.hidden = true;
+          const openResp = await sendMsg({ type: 'aipf:open' });
+          check('popup 消息 aipf:open 能打开面板', !!openResp && openResp.ok === true && panelEl.hidden === false,
+            JSON.stringify(openResp) + ' hidden=' + panelEl.hidden);
+        } catch (err) {
+          check('测试过程中未抛异常', false, String(err && err.stack ? err.stack.split('\n')[0] : err));
+        }
+
+        report();
+      }, 400);
+    </script>
+  </body>
+</html>

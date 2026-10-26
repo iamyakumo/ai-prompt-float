@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>敌意页面：模拟「在任意处打字即聚焦聊天框」</title>
+    <style>
+      body { margin: 0; height: 100vh; font: 13px/1.5 "Microsoft YaHei", sans-serif; }
+      #composer { position: absolute; bottom: 24px; left: 16px; width: 520px; min-height: 70px; padding: 8px;
+        border: 1px solid #ccc; border-radius: 8px; }
+      #report { position: absolute; top: 12px; left: 16px; margin: 0; font-size: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <pre id="report">ready</pre>
+    <div id="composer" contenteditable="true" data-placeholder="给 AI 发消息"></div>
+
+    <!-- 1. chrome API 桩 -->
+    <script>
+      window.__store = {};
+      window.chrome = {
+        runtime: {
+          lastError: null,
+          onMessage: { addListener(fn) { window.__msgListener = fn; } },
+          getURL: (p) => p,
+        },
+        storage: {
+          local: {
+            get(keys, cb) {
+              const list = Array.isArray(keys) ? keys : [keys];
+              const out = {};
+              for (const k of list) if (k in window.__store) out[k] = JSON.parse(JSON.stringify(window.__store[k]));
+              setTimeout(() => cb(out), 0);
+            },
+            set(obj, cb) {
+              for (const k in obj) window.__store[k] = JSON.parse(JSON.stringify(obj[k]));
+              if (cb) setTimeout(cb, 0);
+            },
+          },
+          onChanged: { addListener() {} },
+        },
+      };
+    </script>
+
+    <!-- 2. 被测扩展脚本（与 manifest 顺序一致） -->
+    <script src="../src/i18n.js"></script>
+    <script src="../src/panel-style.js"></script>
+    <script src="../src/insert.js"></script>
+    <script src="../src/content.js"></script>
+
+    <!-- 3. 模拟站点行为：内容脚本之后才注册（真实站点在 document_start 之后才 boot） -->
+    <script>
+      const composer = document.getElementById('composer');
+      const stolen = [];
+
+      // 探针：记录真实按键到达 window/document 时的目标与事件路径，用于排查
+      window.__probe = [];
+      window.addEventListener('keydown', (e) => {
+        window.__probe.push({
+          at: 'window',
+          target: e.target ? e.target.tagName + (e.target.id ? '#' + e.target.id : '') : null,
+          path: (e.composedPath ? e.composedPath() : []).map((n) =>
+            n === window ? 'window' : n === document ? 'document' : n.tagName || String(n)
+          ),
+        });
+      }, true);
+      document.addEventListener('keydown', (e) => {
+        window.__probe.push({ at: 'document', defaultPrevented: e.defaultPrevented });
+      }, true);
+
+      function steal(e) {
+        if (e.key == null || e.key.length !== 1) return;
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        const t = e.target;
+        const isOwnEditor = t === composer || (composer.contains && composer.contains(t));
+        if (isOwnEditor) return;
+        // 站点把按键据为己有：聚焦聊天框 + 把字写进去 + 阻止默认行为
+        stolen.push(e.key);
+        composer.focus();
+        composer.textContent += e.key;
+        e.preventDefault();
+      }
+
+      // 大多数站点用 document 上的监听；有的用 window 捕获。两种都模拟。
+      document.addEventListener('keydown', steal, true);
+      window.addEventListener('keydown', steal, true);
+
+      window.__hostile = { stolen: stolen, composer: composer };
+
+      // ---------------- 测试 API（由 test/cdp-typing.mjs 通过 CDP 调用） ----------------
+      window.__t = {
+        /** 打开浮窗并进入「新增提示词」编辑视图，把光标放进内容输入框 */
+        prepare() {
+          const NS = window.AIPF;
+          NS.__ui.open();
+          const shadow = document.querySelector('[data-aipf-root]').shadowRoot;
+          shadow.querySelector('[data-act="new"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          const title = shadow.querySelector('[data-field="title"]');
+          const content = shadow.querySelector('[data-field="content"]');
+          title.value = '';
+          content.value = '';
+          composer.textContent = '';
+          stolen.length = 0;
+          content.focus();
+          window.__t.shadow = shadow;
+          return {
+            hasPanel: !!shadow.querySelector('.aipf-panel'),
+            focusedField: shadow.activeElement ? shadow.activeElement.getAttribute('data-field') : null,
+          };
+        },
+        read() {
+          const shadow = document.querySelector('[data-aipf-root]').shadowRoot;
+          return {
+            panel: shadow.querySelector('[data-field="content"]').value,
+            composer: composer.textContent,
+            stolen: stolen.join(''),
+            focusedField: shadow.activeElement ? shadow.activeElement.getAttribute('data-field') : null,
+          };
+        },
+        shield(on) {
+          window.AIPF.__ui.setKeyShield(on);
+        },
+        view() {
+          const shadow = document.querySelector('[data-aipf-root]').shadowRoot;
+          const panel = shadow.querySelector('.aipf-panel');
+          const edit = shadow.querySelector('[data-view="edit"]');
+          return { panelOpen: panel.hidden === false, editVisible: edit.hidden === false };
+        },
+      };
+    </script>
+  </body>
+</html>
